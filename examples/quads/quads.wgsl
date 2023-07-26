@@ -1,4 +1,4 @@
-#import bevy_render::view
+#import bevy_render::view View
 
 struct Quad {
     center: vec3<f32>,

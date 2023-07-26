@@ -11,7 +11,7 @@ bevy_ci_testing = ["bevy/bevy_ci_testing"]
 trace_tracy = ["bevy/trace_tracy"]
 
 [dependencies]
-bevy = "0.10"
+bevy = "0.11"
 bitflags = "2.1.0"
 
 [dev-dependencies]

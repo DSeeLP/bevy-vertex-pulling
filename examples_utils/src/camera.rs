@@ -7,7 +7,8 @@ pub struct CameraControllerPlugin;
 
 impl Plugin for CameraControllerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_system(camera_controller).add_system(print_controls);
+        app.add_systems(Update, (camera_controller, print_controls));
+        // .add_system(print_controls);
     }
 }
 
@@ -73,7 +74,7 @@ impl Default for CameraController {
             key_right: KeyCode::D,
             key_up: KeyCode::E,
             key_down: KeyCode::Q,
-            key_run: KeyCode::LShift,
+            key_run: KeyCode::ShiftLeft,
             key_enable_mouse: MouseButton::Left,
             walk_speed: 5.0,
             run_speed: 15.0,

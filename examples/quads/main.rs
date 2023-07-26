@@ -2,7 +2,7 @@ use bevy::{
     core_pipeline::core_3d,
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     ecs::{
-        query::ROQueryItem,
+        query::{QueryItem, ROQueryItem},
         system::{
             lifetimeless::{Read, SRes},
             SystemParamItem,
@@ -14,7 +14,9 @@ use bevy::{
         camera::ExtractedCamera,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::PrimitiveTopology,
-        render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext, SlotInfo, SlotType},
+        render_graph::{
+            NodeRunError, RenderGraphApp, RenderGraphContext, ViewNode, ViewNodeRunner,
+        },
         render_phase::{
             AddRenderCommand, CachedRenderPipelinePhaseItem, DrawFunctionId, DrawFunctions,
             PhaseItem, RenderCommand, RenderCommandResult, RenderPhase, SetItemPipeline,
@@ -33,11 +35,8 @@ use bevy::{
         },
         renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::BevyDefault,
-        view::{
-            ExtractedView, ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset,
-            ViewUniforms,
-        },
-        Extract, RenderApp, RenderSet,
+        view::{ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
+        Extract, Render, RenderApp, RenderSet,
     },
 };
 use bytemuck::cast_slice;
@@ -53,16 +52,18 @@ fn main() {
                     env!("CARGO_PKG_NAME"),
                     env!("CARGO_PKG_VERSION")
                 ),
-                resolution: (1280.0, 720.0).into(),
+                resolution: (1920.0, 1080.0).into(),
                 ..Default::default()
             }),
             ..default()
         }))
-        .add_plugin(CameraControllerPlugin)
-        .add_plugin(FrameTimeDiagnosticsPlugin)
-        .add_plugin(LogDiagnosticsPlugin::default())
-        .add_plugin(QuadsPlugin)
-        .add_startup_system(setup)
+        .add_plugins((
+            CameraControllerPlugin,
+            FrameTimeDiagnosticsPlugin,
+            LogDiagnosticsPlugin::default(),
+            QuadsPlugin,
+        ))
+        .add_systems(Startup, setup)
         .run();
 }
 
@@ -362,48 +363,24 @@ mod node {
     pub const QUADS_PASS: &str = "quads_pass";
 }
 
-pub struct QuadsPassNode {
-    query: QueryState<
-        (
-            &'static ExtractedCamera,
-            &'static RenderPhase<QuadsPhaseItem>,
-            &'static ViewTarget,
-            &'static ViewDepthTexture,
-        ),
-        With<ExtractedView>,
-    >,
-}
+#[derive(Default)]
+pub struct QuadsPassNode;
 
-impl QuadsPassNode {
-    pub const IN_VIEW: &'static str = "view";
-
-    pub fn new(world: &mut World) -> Self {
-        Self {
-            query: QueryState::new(world),
-        }
-    }
-}
-
-impl render_graph::Node for QuadsPassNode {
-    fn input(&self) -> Vec<SlotInfo> {
-        vec![SlotInfo::new(QuadsPassNode::IN_VIEW, SlotType::Entity)]
-    }
-
-    fn update(&mut self, world: &mut World) {
-        self.query.update_archetypes(world);
-    }
-
+impl ViewNode for QuadsPassNode {
+    type ViewQuery = (
+        &'static ExtractedCamera,
+        &'static RenderPhase<QuadsPhaseItem>,
+        &'static ViewTarget,
+        &'static ViewDepthTexture,
+    );
     fn run(
         &self,
         graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
+        (camera, quads_phase, target, depth): QueryItem<Self::ViewQuery>,
         world: &World,
     ) -> Result<(), NodeRunError> {
-        let view_entity = graph.get_input_entity(Self::IN_VIEW)?;
-        let (camera, quads_phase, target, depth) = match self.query.get_manual(world, view_entity) {
-            Ok(query) => query,
-            Err(_) => return Ok(()), // No window
-        };
+        let view_entity = graph.view_entity();
 
         #[cfg(feature = "trace")]
         let _main_quads_pass_span = info_span!("main_quads_pass").entered();
@@ -427,12 +404,19 @@ impl render_graph::Node for QuadsPassNode {
         };
 
         let mut render_pass = render_context.begin_tracked_render_pass(pass_descriptor);
+        render_pass.set_render_pipeline(
+            world
+                .resource::<PipelineCache>()
+                .get_render_pipeline(world.resource::<QuadsPipeline>().pipeline_id)
+                .unwrap(),
+        );
+        render_pass.draw(0..3, 0..1);
 
-        if let Some(viewport) = camera.viewport.as_ref() {
-            render_pass.set_camera_viewport(viewport);
-        }
+        // if let Some(viewport) = camera.viewport.as_ref() {
+        //     render_pass.set_camera_viewport(viewport);
+        // }
 
-        quads_phase.render(&mut render_pass, world, view_entity);
+        // quads_phase.render(&mut render_pass, world, view_entity);
 
         Ok(())
     }
@@ -444,31 +428,36 @@ impl Plugin for QuadsPlugin {
     fn build(&self, app: &mut App) {
         app.world.resource_mut::<Assets<Shader>>().set_untracked(
             QUADS_SHADER_HANDLE,
-            Shader::from_wgsl(include_str!("quads.wgsl")),
+            Shader::from_wgsl(include_str!("quads.wgsl"), "quads.wgsl"),
         );
-        app.add_plugin(ExtractResourcePlugin::<Quads>::default());
+        app.add_plugins(ExtractResourcePlugin::<Quads>::default());
 
         let render_app = app.sub_app_mut(RenderApp);
 
         render_app
             .init_resource::<DrawFunctions<QuadsPhaseItem>>()
             .add_render_command::<QuadsPhaseItem, DrawQuads>()
-            .init_resource::<QuadsPipeline>()
-            .add_system(extract_quads_phase.in_schedule(ExtractSchedule))
-            .add_system(prepare_quads.in_set(RenderSet::Prepare))
-            .add_system(queue_quads.in_set(RenderSet::Queue));
-
-        let quads_pass_node = QuadsPassNode::new(&mut render_app.world);
-        let mut graph = render_app.world.resource_mut::<RenderGraph>();
-        let draw_3d_graph = graph.get_sub_graph_mut(core_3d::graph::NAME).unwrap();
-        draw_3d_graph.add_node(node::QUADS_PASS, quads_pass_node);
-        draw_3d_graph.add_node_edge(core_3d::graph::node::MAIN_PASS, node::QUADS_PASS);
-        draw_3d_graph.add_slot_edge(
-            draw_3d_graph.input_node().id,
-            core_3d::graph::input::VIEW_ENTITY,
-            node::QUADS_PASS,
-            QuadsPassNode::IN_VIEW,
-        );
+            .add_render_graph_node::<ViewNodeRunner<QuadsPassNode>>(
+                core_3d::graph::NAME,
+                node::QUADS_PASS,
+            )
+            .add_render_graph_edge(
+                core_3d::graph::NAME,
+                core_3d::graph::node::END_MAIN_PASS,
+                node::QUADS_PASS,
+            )
+            .add_systems(ExtractSchedule, extract_quads_phase)
+            .add_systems(
+                Render,
+                (
+                    prepare_quads.in_set(RenderSet::Prepare),
+                    queue_quads.in_set(RenderSet::Queue),
+                ),
+            );
+    }
+    fn finish(&self, app: &mut App) {
+        let render_app = app.sub_app_mut(RenderApp);
+        render_app.init_resource::<QuadsPipeline>();
     }
 }
 
@@ -524,7 +513,7 @@ impl FromWorld for QuadsPipeline {
         let pipeline_cache = world.resource_mut::<PipelineCache>();
         let pipeline_id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
             label: Some("quads_pipeline".into()),
-            layout: vec![view_layout.clone(), quads_layout.clone()],
+            layout: vec![],
             vertex: VertexState {
                 shader: QUADS_SHADER_HANDLE.typed(),
                 shader_defs: vec![],
@@ -654,6 +643,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawVertexPulledQuads {
             IndexFormat::Uint32,
         );
         pass.draw_indexed(0..gpu_quads.index_count, 0, 0..1);
+        pass.draw(0..3, 0..1);
         RenderCommandResult::Success
     }
 }

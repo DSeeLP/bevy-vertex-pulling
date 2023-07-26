@@ -109,15 +109,48 @@
 //     return in.color;
 // }
 
+struct Vertex {
+    @builtin(vertex_index) index: u32,
+    // @location(0) position: vec3<f32>
+}
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec4<f32>
+    // @location(0) world_position: vec4<f32>,
+    // @location(1) world_normal: vec3<f32>,
+}
+
+
+var<private> VERTEX_POSITIONS: array<vec4f, 3> = array<vec4f, 3>(
+    // Front
+    vec4f(-0.5, -0.5, 0.5, 1.0),
+    vec4f(0.5, -0.5, 0.5, 1.0),
+    vec4f(0.5, 0.5, 0.5, 1.0)
+);
 
 @vertex
-fn vertex(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) vec4<f32> {
-    let x = f32(i32(in_vertex_index) - 1);
-    let y = f32(i32(in_vertex_index & 1u) * 2 - 1);
-    return vec4<f32>(x, y, 0.0, 1.0);
+fn vertex(vertex: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = VERTEX_POSITIONS[vertex.index];
+    out.color = out.clip_position;
+    return out;
 }
 
 @fragment
-fn fragment() -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    return in.color;
+    // return vec4<f32>(1.0, 0.0, 0.0, 1.0);
 }
+
+
+// @vertex
+// fn vertex(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) vec4<f32> {
+//     let x = f32(i32(in_vertex_index) - 1);
+//     let y = f32(i32(in_vertex_index & 1u) * 2 - 1);
+//     return vec4<f32>(x, y, 0.0, 1.0);
+// }
+
+// @fragment
+// fn fragment() -> @location(0) vec4<f32> {
+//     return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+// }
